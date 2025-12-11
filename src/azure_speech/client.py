@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import httpx
 
@@ -186,7 +186,7 @@ class SpeechClient:
         targets = list(to)
         if not targets:
             raise ValueError("At least one target language code must be provided.")
-        params: Dict[str, object] = {"from": from_language or self.config.speech_recognition_language, "to": targets}
+        params: Dict[str, Any] = {"from": from_language or self.config.speech_recognition_language, "to": targets}
         headers = self._auth_headers()
         headers["Content-Type"] = content_type
         response = self._client.post(self.config.translation_url, params=params, headers=headers, content=audio)
@@ -194,7 +194,11 @@ class SpeechClient:
         data = response.json()
         translations: Dict[str, str] = {}
         for item in data.get("translations", []):
-            translations[item.get("to")] = item.get("text", "")
+            if not isinstance(item, dict):
+                continue
+            language_code = item.get("to")
+            if language_code:
+                translations[language_code] = item.get("text", "")
         recognized = data.get("text") or data.get("DisplayText")
         return SpeechTranslationResult(translations=translations, recognized=recognized, raw=data)
 
