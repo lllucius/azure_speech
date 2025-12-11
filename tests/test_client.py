@@ -96,18 +96,14 @@ def test_async_speak_text_with_token_and_streaming():
         async_transport=transport,
     )
 
-    result = asyncio.run(client.speak_text_async("hello async"))
+    async def run_flow():
+        result = await client.speak_text_async("hello async")
+        chunks = [chunk async for chunk in client.stream_synthesis_async("hello async")]
+        return result, chunks
+
+    result, chunks = asyncio.run(run_flow())
     assert result.audio == b"async-audio"
-
-    chunks = list(asyncio.run(_collect_async_stream(client.stream_synthesis_async("hello async"))))
     assert b"async-audio" in b"".join(chunks)
-
-
-async def _collect_async_stream(generator):
-    collected = []
-    async for chunk in generator:
-        collected.append(chunk)
-    return collected
 
 
 def test_async_translate_maps_translations_and_respects_targets():

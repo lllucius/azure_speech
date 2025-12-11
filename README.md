@@ -35,10 +35,10 @@ import asyncio
 from azure_speech import SpeechClient, SpeechConfig
 
 async def main():
-    client = SpeechClient(SpeechConfig.from_authorization_token("YOUR_TOKEN", region="eastus"))
-    result = await client.speak_text_async("Hello from Azure Speech async!")
-    with open("hello_async.mp3", "wb") as f:
-        f.write(result.audio)
+    async with SpeechClient(SpeechConfig.from_authorization_token("YOUR_TOKEN", region="eastus")) as client:
+        result = await client.speak_text_async("Hello from Azure Speech async!")
+        with open("hello_async.mp3", "wb") as f:
+            f.write(result.audio)
 
 asyncio.run(main())
 ```

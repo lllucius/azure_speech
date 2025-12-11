@@ -24,13 +24,12 @@ async def main() -> None:
     else:
         raise SystemExit("Set AZURE_SPEECH_KEY or AZURE_SPEECH_TOKEN.")
 
-    client = SpeechClient(config)
-    result = await client.speak_text_async("Hello from the async Azure Speech REST SDK!")
+    async with SpeechClient(config) as client:
+        result = await client.speak_text_async("Hello from the async Azure Speech REST SDK!")
 
-    output = Path("output_async.mp3")
-    output.write_bytes(result.audio)
-    print(f"Wrote synthesized audio to {output}")
-    await client.aclose()
+        output = Path("output_async.mp3")
+        output.write_bytes(result.audio)
+        print(f"Wrote synthesized audio to {output}")
 
 
 if __name__ == "__main__":

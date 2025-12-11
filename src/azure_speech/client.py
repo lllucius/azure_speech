@@ -1,5 +1,6 @@
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, AsyncIterable, Dict, Iterable, Optional
 
 import httpx
 
@@ -83,19 +84,14 @@ class SpeechClient:
 
     def close(self) -> None:
         self._client.close()
-        if not self._async_client.is_closed:
-            try:
-                import anyio  # type: ignore
-
-                anyio.from_thread.run(self._async_client.aclose)
-            except Exception:
-                # If anyio not available or loop running, fall back to closing synchronously.
-                try:
-                    import asyncio
-
-                    asyncio.run(self._async_client.aclose())
-                except Exception:
-                    pass
+        if self._async_client.is_closed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._async_client.aclose())
+        else:
+            loop.create_task(self._async_client.aclose())
 
     def __enter__(self) -> "SpeechClient":
         return self
@@ -219,10 +215,6 @@ class SpeechClient:
                 if chunk:
                     yield chunk
 
-    def set_authorization_token(self, token: str) -> None:
-        """Update bearer token at runtime (useful for short-lived tokens)."""
-        self.config.authorization_token = token
-
     async def stream_synthesis_async(
         self,
         text: str,
@@ -234,7 +226,7 @@ class SpeechClient:
         pitch: Optional[str] = None,
         language: Optional[str] = None,
         ssml: Optional[str] = None,
-    ):
+    ) -> AsyncIterable[bytes]:
         """Async generator: stream synthesized audio in chunks."""
         payload = ssml or build_ssml(
             text,
@@ -358,6 +350,10 @@ class SpeechClient:
                 translations[language_code] = item.get("text", "")
         recognized = data.get("text") or data.get("DisplayText")
         return SpeechTranslationResult(translations=translations, recognized=recognized, raw=data)
+
+    def set_authorization_token(self, token: str) -> None:
+        """Update bearer token at runtime (useful for short-lived tokens)."""
+        self.config.authorization_token = token
 
     def _auth_headers(self) -> Dict[str, str]:
         headers: Dict[str, str] = {}
