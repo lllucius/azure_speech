@@ -91,7 +91,8 @@ class SpeechClient:
         except RuntimeError:
             asyncio.run(self._async_client.aclose())
         else:
-            loop.create_task(self._async_client.aclose())
+            # When already inside a running loop, rely on async context managers or explicit aclose().
+            pass
 
     def __enter__(self) -> "SpeechClient":
         return self
