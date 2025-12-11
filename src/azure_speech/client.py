@@ -68,19 +68,50 @@ def build_ssml(
 class SpeechClient:
     """Lightweight wrapper around Azure Speech REST APIs."""
 
-    def __init__(self, config: SpeechConfig, *, timeout: float = 15.0, transport: Optional[httpx.BaseTransport] = None) -> None:
+    def __init__(
+        self,
+        config: SpeechConfig,
+        *,
+        timeout: float = 15.0,
+        transport: Optional[httpx.BaseTransport] = None,
+        async_transport: Optional[httpx.AsyncBaseTransport] = None,
+    ) -> None:
         config.validate()
         self.config = config
         self._client = httpx.Client(timeout=timeout, transport=transport)
+        self._async_client = httpx.AsyncClient(timeout=timeout, transport=async_transport)
 
     def close(self) -> None:
         self._client.close()
+        if not self._async_client.is_closed:
+            try:
+                import anyio  # type: ignore
+
+                anyio.from_thread.run(self._async_client.aclose)
+            except Exception:
+                # If anyio not available or loop running, fall back to closing synchronously.
+                try:
+                    import asyncio
+
+                    asyncio.run(self._async_client.aclose())
+                except Exception:
+                    pass
 
     def __enter__(self) -> "SpeechClient":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+    async def __aenter__(self) -> "SpeechClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        if not self._async_client.is_closed:
+            await self._async_client.aclose()
 
     def speak_text(
         self,
@@ -111,6 +142,42 @@ class SpeechClient:
             }
         )
         response = self._client.post(self.config.tts_url, headers=headers, content=payload.encode("utf-8"))
+        self._raise_for_status(response)
+        return SpeechSynthesisResult(
+            audio=response.content,
+            request_id=response.headers.get("X-RequestId"),
+            format=output_format,
+        )
+
+    async def speak_text_async(
+        self,
+        text: str,
+        *,
+        output_format: str = "audio-16khz-32kbitrate-mono-mp3",
+        voice: Optional[str] = None,
+        style: Optional[str] = None,
+        rate: Optional[str] = None,
+        pitch: Optional[str] = None,
+        language: Optional[str] = None,
+        ssml: Optional[str] = None,
+    ) -> SpeechSynthesisResult:
+        """Async: convert text to audio bytes."""
+        payload = ssml or build_ssml(
+            text,
+            voice=voice or self.config.speech_synthesis_voice_name,
+            language=language or self.config.speech_recognition_language,
+            style=style,
+            rate=rate,
+            pitch=pitch,
+        )
+        headers = self._auth_headers()
+        headers.update(
+            {
+                "Content-Type": "application/ssml+xml",
+                "X-Microsoft-OutputFormat": output_format,
+            }
+        )
+        response = await self._async_client.post(self.config.tts_url, headers=headers, content=payload.encode("utf-8"))
         self._raise_for_status(response)
         return SpeechSynthesisResult(
             audio=response.content,
@@ -152,6 +219,46 @@ class SpeechClient:
                 if chunk:
                     yield chunk
 
+    def set_authorization_token(self, token: str) -> None:
+        """Update bearer token at runtime (useful for short-lived tokens)."""
+        self.config.authorization_token = token
+
+    async def stream_synthesis_async(
+        self,
+        text: str,
+        *,
+        output_format: str = "audio-16khz-32kbitrate-mono-mp3",
+        voice: Optional[str] = None,
+        style: Optional[str] = None,
+        rate: Optional[str] = None,
+        pitch: Optional[str] = None,
+        language: Optional[str] = None,
+        ssml: Optional[str] = None,
+    ):
+        """Async generator: stream synthesized audio in chunks."""
+        payload = ssml or build_ssml(
+            text,
+            voice=voice or self.config.speech_synthesis_voice_name,
+            language=language or self.config.speech_recognition_language,
+            style=style,
+            rate=rate,
+            pitch=pitch,
+        )
+        headers = self._auth_headers()
+        headers.update(
+            {
+                "Content-Type": "application/ssml+xml",
+                "X-Microsoft-OutputFormat": output_format,
+            }
+        )
+        async with self._async_client.stream(
+            "POST", self.config.tts_url, headers=headers, content=payload.encode("utf-8")
+        ) as resp:
+            self._raise_for_status(resp)
+            async for chunk in resp.aiter_bytes():
+                if chunk:
+                    yield chunk
+
     def recognize(
         self,
         audio: bytes,
@@ -165,6 +272,28 @@ class SpeechClient:
         headers = self._auth_headers()
         headers["Content-Type"] = content_type
         response = self._client.post(self.config.stt_url, params=params, headers=headers, content=audio)
+        self._raise_for_status(response)
+        data = response.json()
+        return SpeechRecognitionResult(
+            text=data.get("DisplayText") or data.get("Text") or "",
+            duration=data.get("Duration"),
+            offset=data.get("Offset"),
+            raw=data,
+        )
+
+    async def recognize_async(
+        self,
+        audio: bytes,
+        *,
+        language: Optional[str] = None,
+        format: str = "simple",
+        content_type: str = "audio/wav",
+    ) -> SpeechRecognitionResult:
+        """Async: run speech-to-text on the provided audio bytes."""
+        params = {"language": language or self.config.speech_recognition_language, "format": format}
+        headers = self._auth_headers()
+        headers["Content-Type"] = content_type
+        response = await self._async_client.post(self.config.stt_url, params=params, headers=headers, content=audio)
         self._raise_for_status(response)
         data = response.json()
         return SpeechRecognitionResult(
@@ -190,6 +319,34 @@ class SpeechClient:
         headers = self._auth_headers()
         headers["Content-Type"] = content_type
         response = self._client.post(self.config.translation_url, params=params, headers=headers, content=audio)
+        self._raise_for_status(response)
+        data = response.json()
+        translations: Dict[str, str] = {}
+        for item in data.get("translations", []):
+            if not isinstance(item, dict):
+                continue
+            language_code = item.get("to")
+            if language_code:
+                translations[language_code] = item.get("text", "")
+        recognized = data.get("text") or data.get("DisplayText")
+        return SpeechTranslationResult(translations=translations, recognized=recognized, raw=data)
+
+    async def translate_async(
+        self,
+        audio: bytes,
+        *,
+        to: Iterable[str],
+        from_language: Optional[str] = None,
+        content_type: str = "audio/wav",
+    ) -> SpeechTranslationResult:
+        """Async: translate spoken audio into the requested languages."""
+        targets = list(to)
+        if not targets:
+            raise ValueError("At least one target language code must be provided.")
+        params: Dict[str, Any] = {"from": from_language or self.config.speech_recognition_language, "to": targets}
+        headers = self._auth_headers()
+        headers["Content-Type"] = content_type
+        response = await self._async_client.post(self.config.translation_url, params=params, headers=headers, content=audio)
         self._raise_for_status(response)
         data = response.json()
         translations: Dict[str, str] = {}

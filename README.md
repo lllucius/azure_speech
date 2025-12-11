@@ -24,11 +24,26 @@
  # Speech-to-text
  with open("sample.wav", "rb") as f:
      audio_bytes = f.read()
- stt = client.recognize(audio_bytes)
- print(stt.text)
- ```
- 
- ## Authentication
+stt = client.recognize(audio_bytes)
+print(stt.text)
+```
+
+### Async usage
+
+```python
+import asyncio
+from azure_speech import SpeechClient, SpeechConfig
+
+async def main():
+    client = SpeechClient(SpeechConfig.from_authorization_token("YOUR_TOKEN", region="eastus"))
+    result = await client.speak_text_async("Hello from Azure Speech async!")
+    with open("hello_async.mp3", "wb") as f:
+        f.write(result.audio)
+
+asyncio.run(main())
+```
+
+## Authentication
  
  You can authenticate with either an Azure Cognitive Services subscription key or an Azure Active Directory bearer token.
  

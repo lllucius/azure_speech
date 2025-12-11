@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -80,3 +82,60 @@ def test_error_response_raises_custom_error():
         client.speak_text("bad")
 
     assert "bad request" in str(exc.value)
+
+
+def test_async_speak_text_with_token_and_streaming():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer token-xyz"
+        assert request.headers["X-Microsoft-OutputFormat"] == "audio-16khz-32kbitrate-mono-mp3"
+        return httpx.Response(200, content=b"async-audio")
+
+    transport = httpx.MockTransport(handler)
+    client = SpeechClient(
+        SpeechConfig.from_authorization_token("token-xyz", region="eastus"),
+        async_transport=transport,
+    )
+
+    result = asyncio.run(client.speak_text_async("hello async"))
+    assert result.audio == b"async-audio"
+
+    chunks = list(asyncio.run(_collect_async_stream(client.stream_synthesis_async("hello async"))))
+    assert b"async-audio" in b"".join(chunks)
+
+
+async def _collect_async_stream(generator):
+    collected = []
+    async for chunk in generator:
+        collected.append(chunk)
+    return collected
+
+
+def test_async_translate_maps_translations_and_respects_targets():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get_list("to") == ["es-ES"]
+        payload = {
+            "text": "hello",
+            "translations": [
+                {"to": "es-ES", "text": "hola"},
+                None,
+            ],
+        }
+        return httpx.Response(200, json=payload)
+
+    transport = httpx.MockTransport(handler)
+    client = SpeechClient(SpeechConfig.from_subscription("abc", region="eastus"), async_transport=transport)
+
+    result = asyncio.run(client.translate_async(b"audio", to=["es-ES"]))
+    assert result.recognized == "hello"
+    assert result.translations == {"es-ES": "hola"}
+
+
+def test_set_authorization_token_updates_headers():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer new-token"
+        return httpx.Response(200, content=b"audio")
+
+    transport = httpx.MockTransport(handler)
+    client = SpeechClient(SpeechConfig.from_authorization_token("old", region="eastus"), transport=transport)
+    client.set_authorization_token("new-token")
+    client.speak_text("hello")
